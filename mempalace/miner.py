@@ -16,8 +16,15 @@ from datetime import datetime
 from collections import defaultdict
 
 from .palace import (
-    SKIP_DIRS, get_collection, get_closets_collection,
-    file_already_mined, mine_lock, build_closet_lines, upsert_closet_lines,
+    NORMALIZE_VERSION,
+    SKIP_DIRS,
+    build_closet_lines,
+    file_already_mined,
+    get_closets_collection,
+    get_collection,
+    mine_lock,
+    purge_file_closets,
+    upsert_closet_lines,
 )
 
 READABLE_EXTENSIONS = {
@@ -384,6 +391,7 @@ def add_drawer(
             "chunk_index": chunk_index,
             "added_by": agent,
             "filed_at": datetime.now().isoformat(),
+            "normalize_version": NORMALIZE_VERSION,
         }
         # Store file mtime so we can detect modifications later.
         try:
@@ -470,22 +478,32 @@ def process_file(
             if added:
                 drawers_added += 1
 
-        # Build closet — the searchable index pointing to these drawers
-        # Each topic line is atomic — never split across closets
+        # Build closet — the searchable index pointing to these drawers.
+        # Purge first: a re-mine (mtime change or normalize_version bump) must
+        # fully replace the prior closets, not append to them.
         if closets_col and drawers_added > 0:
             drawer_ids = [
                 f"drawer_{wing}_{room}_{hashlib.sha256((source_file + str(c['chunk_index'])).encode()).hexdigest()[:24]}"
                 for c in chunks
             ]
             closet_lines = build_closet_lines(source_file, drawer_ids, content, wing, room)
-            closet_id_base = f"closet_{wing}_{room}_{hashlib.sha256(source_file.encode()).hexdigest()[:24]}"
-            upsert_closet_lines(closets_col, closet_id_base, closet_lines, {
-                "wing": wing,
-                "room": room,
-                "source_file": source_file,
-                "drawer_count": drawers_added,
-                "filed_at": datetime.now().isoformat(),
-            })
+            closet_id_base = (
+                f"closet_{wing}_{room}_{hashlib.sha256(source_file.encode()).hexdigest()[:24]}"
+            )
+            purge_file_closets(closets_col, source_file)
+            upsert_closet_lines(
+                closets_col,
+                closet_id_base,
+                closet_lines,
+                {
+                    "wing": wing,
+                    "room": room,
+                    "source_file": source_file,
+                    "drawer_count": drawers_added,
+                    "filed_at": datetime.now().isoformat(),
+                    "normalize_version": NORMALIZE_VERSION,
+                },
+            )
 
     return drawers_added, room
 
